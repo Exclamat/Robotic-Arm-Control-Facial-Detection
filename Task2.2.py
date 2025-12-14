@@ -242,7 +242,7 @@ def index():
             <style>body { background-color: #333; color: white; text-align: center; font-family: sans-serif; }</style>
         </head>
         <body>
-            <h1>AR4 Tracking Feed</h1>
+            <h1>Tracking Feed</h1>
             <p></p>
             <img src="/video_feed" style="width: 80%; border: 2px solid #555;">
         </body>
