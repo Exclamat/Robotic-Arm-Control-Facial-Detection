@@ -12,7 +12,7 @@ except ImportError:
     exit()
 
 MODEL_PATH = "face_recognizer_model.pt"
-TEST_IMAGE_PATH = "cropped_faces/Yash Saini/Yash Saini_face_0.jpg"
+TEST_IMAGE_PATH = "sample_image/YS_1_face.png"
 
 CLASS_NAMES = ['Anthony Burden', 'Jackson Boccanfuso', 'Jacob Brueck', 'Joshua Justice', 'Toshiro Gibson', 'Yash Saini']
 
