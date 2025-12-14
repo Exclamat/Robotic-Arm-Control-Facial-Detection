@@ -214,11 +214,11 @@ def index():
     return """
     <html>
         <head>
-            <title>Face Recognition Stream</title>
+            <title>Stream</title>
             <style>body { background-color: #333; color: white; text-align: center; font-family: sans-serif; }</style>
         </head>
         <body>
-            <h1>Live Face Recognition Feed</h1>
+            <h1>Live Feed</h1>
             <img src="/video_feed" style="width: 80%; border: 2px solid #555;">
         </body>
     </html>
