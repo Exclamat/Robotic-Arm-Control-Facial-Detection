@@ -8,11 +8,8 @@ from PIL import Image
 from mtcnn.mtcnn import MTCNN
 from flask import Flask, Response
 
-# Initialize Flask App
 app = Flask(__name__)
 
-# --- Global Configurations ---
-# Disable GUI requirements for headless environments
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 TRAINED_MODEL_PATH = "face_recognizer_model.pt"
@@ -21,7 +18,6 @@ FRAME_SKIP = 4
 CONFIDENCE_THRESHOLD = 0.7
 SYMMETRY_THRESHOLD = 0.7
 
-# --- Helpers ---
 def fixed_image_standardization(image_tensor):
     processed_tensor = (image_tensor - 127.5) / 128.0
     return processed_tensor
@@ -53,8 +49,6 @@ def get_gaze_symmetry(keypoints):
     except:
         return False
 
-# --- Initialization (Run once on startup) ---
-# We initialize models globally so they don't reload for every web request
 try:
     from inception_resnet_v1 import InceptionResnetV1
 except ImportError:
@@ -93,7 +87,6 @@ data_transform = transforms.Compose([
 
 mtcnn = MTCNN()
 
-# --- Video Generator ---
 def generate_frames():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -108,7 +101,6 @@ def generate_frames():
         if not ret:
             break
             
-        # Flip for mirror effect
         frame = cv2.flip(frame, 1)
         frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
 
@@ -154,7 +146,6 @@ def generate_frames():
                 
                 last_known_results = current_results
         
-        # Draw Results
         for (x, y, x2, y2, text, is_looking, person_name) in last_known_results:
             color = (0, 255, 0)
             if "Unknown" in text: color = (0, 0, 255)
@@ -172,11 +163,9 @@ def generate_frames():
                 cv2.putText(frame, gaze_status_text, (10, frame.shape[0] - 10), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
 
-        # Encode frame to JPEG
         ret, buffer = cv2.imencode('.jpg', frame)
         frame_bytes = buffer.tobytes()
         
-        # Yield frame in MJPEG format
         yield (b'--frame\r\n'
                b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
         
@@ -184,7 +173,6 @@ def generate_frames():
 
     cap.release()
 
-# --- Flask Routes ---
 @app.route('/')
 def index():
     return """
@@ -205,5 +193,4 @@ def video_feed():
     return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
 if __name__ == '__main__':
-    # Run on 0.0.0.0 to be accessible externally
     app.run(host='0.0.0.0', port=5000)
