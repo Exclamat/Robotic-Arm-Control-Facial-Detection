@@ -32,6 +32,11 @@ SEARCH_SPEED_J2 = 0.2
 SERIAL_PORT = '/dev/ttyACM0'
 BAUD_RATE = 9600
 
+AR4_SPEED = 20
+AR4_ACCEL = 10
+AR4_DECEL = 10
+AR4_RAMP = 100
+
 def fixed_image_standardization(image_tensor):
     processed_tensor = (image_tensor - 127.5) / 128.0
     return processed_tensor
@@ -184,8 +189,8 @@ def generate_frames():
                             print(f"Tracking -> Pos J1: {j1_current_pos:.2f}, J2: {j2_current_pos:.2f}")
 
                             if ser:
-                                command = f"{j1_current_pos:.2f},{j2_current_pos:.2f}\n"
-                                ser.write(command.encode('utf-8'))
+                                command = f"MJ {j1_current_pos:.2f} {j2_current_pos:.2f} 0.0 0.0 0.0 0.0 {AR4_SPEED} {AR4_ACCEL} {AR4_DECEL} {AR4_RAMP}\n"
+                                ser.write(command.encode('ascii'))
 
                             current_results.append((x, y, x2, y2, text, person_name, error_x, error_y, j1_step, j2_step))
                     except:
@@ -204,8 +209,8 @@ def generate_frames():
             print(f"Searching -> Pos J1: {j1_current_pos:.2f}, J2: {j2_current_pos:.2f}")
             
             if ser:
-                command = f"{j1_current_pos:.2f},{j2_current_pos:.2f}\n"
-                ser.write(command.encode('utf-8'))
+                command = f"MJ {j1_current_pos:.2f} {j2_current_pos:.2f} 0.0 0.0 0.0 0.0 {AR4_SPEED} {AR4_ACCEL} {AR4_DECEL} {AR4_RAMP}\n"
+                ser.write(command.encode('ascii'))
             
             cv2.putText(frame, "SEARCHING...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
             cmd_text = f"J1: {j1_current_pos:.2f} | J2: {j2_current_pos:.2f}"
