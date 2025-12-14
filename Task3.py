@@ -9,6 +9,7 @@ from mtcnn.mtcnn import MTCNN
 from flask import Flask, Response
 import math
 import time
+import serial
 
 app = Flask(__name__)
 
@@ -27,6 +28,9 @@ SEARCH_AMPLITUDE_J1 = 15.0
 SEARCH_SPEED_J1 = 0.5
 SEARCH_AMPLITUDE_J2 = 5.0
 SEARCH_SPEED_J2 = 0.2
+
+SERIAL_PORT = '/dev/ttyACM0'
+BAUD_RATE = 9600
 
 def fixed_image_standardization(image_tensor):
     processed_tensor = (image_tensor - 127.5) / 128.0
@@ -90,6 +94,13 @@ data_transform = transforms.Compose([
 
 mtcnn = MTCNN()
 
+ser = None
+try:
+    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
+    print(f"Serial connected on {SERIAL_PORT}")
+except Exception as e:
+    print(f"Serial connection failed: {e}")
+
 def generate_frames():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -99,6 +110,9 @@ def generate_frames():
     frame_count = 0
     last_known_results = [] 
     search_time = 0.0
+    
+    j1_current_pos = 0.0
+    j2_current_pos = 0.0
     
     while True:
         ret, frame = cap.read()
@@ -161,13 +175,19 @@ def generate_frames():
                             error_x = face_center_x - frame_center_x
                             error_y = face_center_y - frame_center_y
 
-                            j1_move = calculate_joint_movement(error_x, frame_width, TRACKING_DEADZONE, MAX_DEGREE_STEP_J1)
+                            j1_step = calculate_joint_movement(error_x, frame_width, TRACKING_DEADZONE, MAX_DEGREE_STEP_J1)
+                            j2_step = calculate_joint_movement(error_y, frame_height, TRACKING_DEADZONE, MAX_DEGREE_STEP_J2)
                             
-                            j2_move = calculate_joint_movement(error_y, frame_height, TRACKING_DEADZONE, MAX_DEGREE_STEP_J2)
+                            j1_current_pos += j1_step
+                            j2_current_pos += j2_step
 
-                            print(f"Tracking -> J1: {j1_move:.4f}, J2: {j2_move:.4f}")
+                            print(f"Tracking -> Pos J1: {j1_current_pos:.2f}, J2: {j2_current_pos:.2f}")
 
-                            current_results.append((x, y, x2, y2, text, person_name, error_x, error_y, j1_move, j2_move))
+                            if ser:
+                                command = f"{j1_current_pos:.2f},{j2_current_pos:.2f}\n"
+                                ser.write(command.encode('utf-8'))
+
+                            current_results.append((x, y, x2, y2, text, person_name, error_x, error_y, j1_step, j2_step))
                     except:
                         pass
                 
@@ -175,17 +195,20 @@ def generate_frames():
             else:
                 last_known_results = []
         
-        # Search Pattern logic if no target found
         if not last_known_results:
             search_time += 0.1 
             
-            j1_search = SEARCH_AMPLITUDE_J1 * math.sin(search_time * SEARCH_SPEED_J1)
-            j2_search = SEARCH_AMPLITUDE_J2 * math.cos(search_time * SEARCH_SPEED_J2)
+            j1_current_pos = SEARCH_AMPLITUDE_J1 * math.sin(search_time * SEARCH_SPEED_J1)
+            j2_current_pos = SEARCH_AMPLITUDE_J2 * math.cos(search_time * SEARCH_SPEED_J2)
             
-            print(f"Searching -> J1: {j1_search:.4f}, J2: {j2_search:.4f}")
+            print(f"Searching -> Pos J1: {j1_current_pos:.2f}, J2: {j2_current_pos:.2f}")
+            
+            if ser:
+                command = f"{j1_current_pos:.2f},{j2_current_pos:.2f}\n"
+                ser.write(command.encode('utf-8'))
             
             cv2.putText(frame, "SEARCHING...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            cmd_text = f"J1: {j1_search:.2f} | J2: {j2_search:.2f}"
+            cmd_text = f"J1: {j1_current_pos:.2f} | J2: {j2_current_pos:.2f}"
             cv2.putText(frame, cmd_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
 
         cv2.line(frame, (frame_center_x - 10, frame_center_y), (frame_center_x + 10, frame_center_y), (0, 255, 255), 1)
@@ -195,7 +218,7 @@ def generate_frames():
                       (frame_center_x + TRACKING_DEADZONE, frame_center_y + TRACKING_DEADZONE),
                       (100, 100, 100), 1)
 
-        for (x, y, x2, y2, text, person_name, error_x, error_y, j1_move, j2_move) in last_known_results:
+        for (x, y, x2, y2, text, person_name, error_x, error_y, j1_step, j2_step) in last_known_results:
             color = (0, 255, 0)
             if "Unknown" in text: color = (0, 0, 255)
             
@@ -207,7 +230,7 @@ def generate_frames():
                 face_center_y = y + (y2-y)//2
                 cv2.line(frame, (face_center_x, face_center_y), (frame_center_x, frame_center_y), (0, 255, 255), 1)
 
-                cmd_text = f"J1(Base): {j1_move:+.2f} | J2(Shldr): {j2_move:+.2f}"
+                cmd_text = f"J1(Base): {j1_current_pos:.2f} | J2(Shldr): {j2_current_pos:.2f}"
                 cv2.putText(frame, cmd_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
         
         ret, buffer = cv2.imencode('.jpg', frame)
