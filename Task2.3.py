@@ -183,6 +183,8 @@ def generate_frames():
                             
                             j2_move = calculate_joint_movement(error_y, frame_height, TRACKING_DEADZONE, MAX_DEGREE_STEP_J2)
 
+                            print(f"Scaled Joint Movements -> J1: {j1_move:.4f}, J2: {j2_move:.4f}")
+
                             current_results.append((x, y, x2, y2, text, is_looking, person_name, error_x, error_y, j1_move, j2_move))
                     except:
                         pass
@@ -236,19 +238,18 @@ def generate_frames():
 @app.route('/')
 def index():
     return """
-      <html>
+    <html>
         <head>
-            <title>Stream</title>
+            <title>AR4 Tracking Stream</title>
             <style>body { background-color: #333; color: white; text-align: center; font-family: sans-serif; }</style>
         </head>
         <body>
-            <h1>Tracking Feed</h1>
-            <p></p>
+            <h1>AR4 Tracking Feed</h1>
+            <p>Tracking Logic: Non-Linear (Quadratic) Scaling with Deadzone</p>
             <img src="/video_feed" style="width: 80%; border: 2px solid #555;">
         </body>
     </html>
     """
-
 
 @app.route('/video_feed')
 def video_feed():
