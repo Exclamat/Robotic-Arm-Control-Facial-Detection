@@ -181,7 +181,7 @@ class ConvertPilToRawTensor:
     def __call__(self, pil_img):
         return torch.tensor(np.array(pil_img), dtype=torch.float32).permute(2, 0, 1)
 
-def calculate_velocity_command(error_pixels, frame_dimension, deadzone, max_velocity):
+def calculate_velocity_command(error_pixels, frame_dimension, deadzone, max_velocity, invert=False):
     if abs(error_pixels) < deadzone:
         return 0.0
 
@@ -195,6 +195,9 @@ def calculate_velocity_command(error_pixels, frame_dimension, deadzone, max_velo
 
     velocity = scaled_value * max_velocity
     
+    if invert:
+        velocity = -velocity
+        
     return velocity
 
 try:
@@ -314,10 +317,17 @@ def generate_frames():
                             error_x = face_center_x - frame_center_x
                             error_y = face_center_y - frame_center_y
 
-                            j1_vel = calculate_velocity_command(error_x, frame_width, TRACKING_DEADZONE, MAX_VELOCITY_J1)
-                            j2_vel = calculate_velocity_command(error_y, frame_height, TRACKING_DEADZONE, MAX_VELOCITY_J2)
+                            # Calculate required velocity
+                            # J1 (Base): Normal mapping (ErrorX -> VelJ1)
+                            j1_vel = calculate_velocity_command(error_x, frame_width, TRACKING_DEADZONE, MAX_VELOCITY_J1, invert=False)
+                            
+                            # J2 (Shoulder): Inverted mapping (ErrorY -> -VelJ2)
+                            # Face UP in image = Negative Y pixel error.
+                            # Robot UP = Positive J2 Angle.
+                            # So -Error -> +Velocity. This means we must INVERT.
+                            j2_vel = calculate_velocity_command(error_y, frame_height, TRACKING_DEADZONE, MAX_VELOCITY_J2, invert=True)
 
-                            print(f"Tracking -> Vel J1: {j1_vel:.2f}, J2: {j2_vel:.2f}")
+                            print(f"Tracking -> ErrX:{error_x} VJ1:{j1_vel:.2f} | ErrY:{error_y} VJ2:{j2_vel:.2f}")
 
                             if arm:
                                 arm.set_velocity_math(j1_vel, j2_vel)
@@ -390,7 +400,6 @@ def index():
             <style>body { background-color: #333; color: white; text-align: center; font-family: sans-serif; }</style>
         </head>
         <body>
-            <h1>Tracking Feed (Velocity Control)</h1>
             <p></p>
             <img src="/video_feed" style="width: 80%; border: 2px solid #555;">
         </body>
