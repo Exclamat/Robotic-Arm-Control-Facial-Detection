@@ -317,14 +317,7 @@ def generate_frames():
                             error_x = face_center_x - frame_center_x
                             error_y = face_center_y - frame_center_y
 
-                            # Calculate required velocity
-                            # J1 (Base): Normal mapping (ErrorX -> VelJ1)
                             j1_vel = calculate_velocity_command(error_x, frame_width, TRACKING_DEADZONE, MAX_VELOCITY_J1, invert=False)
-                            
-                            # J2 (Shoulder): Inverted mapping (ErrorY -> -VelJ2)
-                            # Face UP in image = Negative Y pixel error.
-                            # Robot UP = Positive J2 Angle.
-                            # So -Error -> +Velocity. This means we must INVERT.
                             j2_vel = calculate_velocity_command(error_y, frame_height, TRACKING_DEADZONE, MAX_VELOCITY_J2, invert=True)
 
                             print(f"Tracking -> ErrX:{error_x} VJ1:{j1_vel:.2f} | ErrY:{error_y} VJ2:{j2_vel:.2f}")
@@ -339,6 +332,9 @@ def generate_frames():
                 last_known_results = current_results
             else:
                 last_known_results = []
+                # Safety Stop: If we were tracking but lost the face, STOP immediately
+                if arm:
+                    arm.set_velocity_math(0.0, 0.0)
         
         if not last_known_results:
             search_time += 0.1 
