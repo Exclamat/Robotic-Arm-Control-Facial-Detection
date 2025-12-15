@@ -10,8 +10,15 @@ from flask import Flask, Response
 import math
 import time
 import serial
+form arm2d import Arm2D
 
+
+
+arm = Arm2D()
 app = Flask(__name__)
+arm.move_xyz(0,0,0)
+ROT = 0
+EL = 0
 
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
@@ -21,8 +28,8 @@ FRAME_SKIP = 4
 CONFIDENCE_THRESHOLD = 0.7
 
 TRACKING_DEADZONE = 40 
-MAX_DEGREE_STEP_J1 = 2.0 
-MAX_DEGREE_STEP_J2 = 2.0
+MAX_DEGREE_STEP_J1 = 2.5 
+MAX_DEGREE_STEP_J2 = 20.0
 
 SEARCH_AMPLITUDE_J1 = 15.0
 SEARCH_SPEED_J1 = 0.5
@@ -180,15 +187,16 @@ def generate_frames():
                             error_x = face_center_x - frame_center_x
                             error_y = face_center_y - frame_center_y
                             
-                            
-                            
-
                             j1_step = calculate_joint_movement(error_x, frame_width, TRACKING_DEADZONE, MAX_DEGREE_STEP_J1)
                             j2_step = calculate_joint_movement(error_y, frame_height, TRACKING_DEADZONE, MAX_DEGREE_STEP_J2)
                             print(j1_step,j2_step)
+                            rot -= j1_step
+                            el -= j2_step
+                            arm.move_xyz(1,rot,el)
+                            
                             j1_current_pos += j1_step
                             j2_current_pos += j2_step
-
+                            
                             print(f"Tracking -> Pos J1: {j1_current_pos:.2f}, J2: {j2_current_pos:.2f}")
 
                             if ser:
