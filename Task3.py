@@ -9,17 +9,17 @@ from mtcnn.mtcnn import MTCNN
 from flask import Flask, Response
 import math
 import time
-import serial
-from arm2d import Arm2D
 
+# --- Import custom robot libraries ---
+try:
+    from arm2d import Arm2D
+except ImportError:
+    print("Error: arm2d.py not found. Please ensure it is in the same directory.")
+    exit()
 
-
-arm = Arm2D()
 app = Flask(__name__)
-arm.move_xyz(0,0,0)
-ROT = 0
-EL = 0
 
+# --- Global Configurations ---
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 TRAINED_MODEL_PATH = "face_recognizer_model.pt"
@@ -27,23 +27,19 @@ DATA_DIR = "cropped_faces"
 FRAME_SKIP = 4
 CONFIDENCE_THRESHOLD = 0.7
 
+# --- Tracking Parameters ---
 TRACKING_DEADZONE = 40 
-MAX_DEGREE_STEP_J1 = 2.5 
-MAX_DEGREE_STEP_J2 = 20.0
+# Max velocity in deg/s for smooth tracking
+MAX_VELOCITY_J1 = 20.0 
+MAX_VELOCITY_J2 = 10.0
 
+# --- Search Parameters ---
 SEARCH_AMPLITUDE_J1 = 15.0
 SEARCH_SPEED_J1 = 0.5
 SEARCH_AMPLITUDE_J2 = 5.0
 SEARCH_SPEED_J2 = 0.2
 
-SERIAL_PORT = '/dev/ttyACM0'
-BAUD_RATE = 9600
-
-AR4_SPEED = 20
-AR4_ACCEL = 10
-AR4_DECEL = 10
-AR4_RAMP = 100
-
+# --- Helpers ---
 def fixed_image_standardization(image_tensor):
     processed_tensor = (image_tensor - 127.5) / 128.0
     return processed_tensor
@@ -52,22 +48,31 @@ class ConvertPilToRawTensor:
     def __call__(self, pil_img):
         return torch.tensor(np.array(pil_img), dtype=torch.float32).permute(2, 0, 1)
 
-def calculate_joint_movement(error_pixels, frame_dimension, deadzone, max_step):
+def calculate_velocity_command(error_pixels, frame_dimension, deadzone, max_velocity):
+    """
+    Calculates velocity command (deg/s) based on pixel error.
+    Uses a deadzone and non-linear scaling.
+    """
     if abs(error_pixels) < deadzone:
         return 0.0
 
     half_screen = frame_dimension / 2
+    # Adjust error so it starts at 0 right after the deadzone
     adjusted_error = error_pixels - (np.sign(error_pixels) * deadzone)
     norm_error = adjusted_error / (half_screen - deadzone)
     
     norm_error = max(-1.0, min(1.0, norm_error))
 
+    # Quadratic scaling for finer control near center
     scaled_value = np.sign(norm_error) * (norm_error ** 2)
 
-    movement = scaled_value * max_step
+    # Convert to velocity (deg/s)
+    # Note: If error is positive (target to right), we usually need positive velocity
+    velocity = scaled_value * max_velocity
     
-    return movement
+    return velocity
 
+# --- Model Loading ---
 try:
     from inception_resnet_v1 import InceptionResnetV1
 except ImportError:
@@ -106,13 +111,17 @@ data_transform = transforms.Compose([
 
 mtcnn = MTCNN()
 
-ser = None
+# --- Robot Initialization ---
+print("Initializing Robot Connection...")
 try:
-    ser = serial.Serial(SERIAL_PORT, BAUD_RATE, timeout=1)
-    print(f"Serial connected on {SERIAL_PORT}")
+    arm = Arm2D()
+    # Optional: arm.initialize() # Uncomment to force homing on startup
+    print("Robot connected successfully via Arm2D.")
 except Exception as e:
-    print(f"Serial connection failed: {e}")
+    print(f"Failed to connect to robot: {e}")
+    arm = None
 
+# --- Video Generator ---
 def generate_frames():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -123,8 +132,8 @@ def generate_frames():
     last_known_results = [] 
     search_time = 0.0
     
-    j1_current_pos = 0.0
-    j2_current_pos = 0.0
+    # We use velocity control, so we don't track absolute position manually
+    # But for search mode, we might need absolute moves if we switch modes
     
     while True:
         ret, frame = cap.read()
@@ -186,24 +195,18 @@ def generate_frames():
                             face_center_y = y + h // 2
                             error_x = face_center_x - frame_center_x
                             error_y = face_center_y - frame_center_y
-                            
-                            j1_step = calculate_joint_movement(error_x, frame_width, TRACKING_DEADZONE, MAX_DEGREE_STEP_J1)
-                            j2_step = calculate_joint_movement(error_y, frame_height, TRACKING_DEADZONE, MAX_DEGREE_STEP_J2)
-                            print(j1_step,j2_step)
-                            rot -= j1_step
-                            el -= j2_step
-                            arm.move_xyz(1,rot,el)
-                            
-                            j1_current_pos += j1_step
-                            j2_current_pos += j2_step
-                            
-                            print(f"Tracking -> Pos J1: {j1_current_pos:.2f}, J2: {j2_current_pos:.2f}")
 
-                            if ser:
-                                command = f"MJ {j1_current_pos:.2f} {j2_current_pos:.2f} 0.0 0.0 0.0 0.0 {AR4_SPEED} {AR4_ACCEL} {AR4_DECEL} {AR4_RAMP}\n"
-                                ser.write(command.encode('ascii'))
+                            # Calculate required velocity
+                            j1_vel = calculate_velocity_command(error_x, frame_width, TRACKING_DEADZONE, MAX_VELOCITY_J1)
+                            j2_vel = calculate_velocity_command(error_y, frame_height, TRACKING_DEADZONE, MAX_VELOCITY_J2)
 
-                            current_results.append((x, y, x2, y2, text, person_name, error_x, error_y, j1_step, j2_step))
+                            print(f"Tracking -> Vel J1: {j1_vel:.2f}, J2: {j2_vel:.2f}")
+
+                            if arm:
+                                # Use the non-blocking velocity command from arm2d.py
+                                arm.set_velocity_math(j1_vel, j2_vel)
+
+                            current_results.append((x, y, x2, y2, text, person_name, error_x, error_y, j1_vel, j2_vel))
                     except:
                         pass
                 
@@ -211,22 +214,31 @@ def generate_frames():
             else:
                 last_known_results = []
         
+        # Search Pattern Logic (when no target found)
         if not last_known_results:
             search_time += 0.1 
             
-            j1_current_pos = SEARCH_AMPLITUDE_J1 * math.sin(search_time * SEARCH_SPEED_J1)
-            j2_current_pos = SEARCH_AMPLITUDE_J2 * math.cos(search_time * SEARCH_SPEED_J2)
+            # For search, we calculate a continuously changing velocity
+            # Velocity is derivative of position: d/dt(A*sin(wt)) = A*w*cos(wt)
             
-            print(f"Searching -> Pos J1: {j1_current_pos:.2f}, J2: {j2_current_pos:.2f}")
+            # Or, we can just oscillate the velocity command itself
+            j1_search_vel = SEARCH_AMPLITUDE_J1 * math.sin(search_time * SEARCH_SPEED_J1)
+            j2_search_vel = SEARCH_AMPLITUDE_J2 * math.cos(search_time * SEARCH_SPEED_J2)
             
-            if ser:
-                command = f"MJ {j1_current_pos:.2f} {j2_current_pos:.2f} 0.0 0.0 0.0 0.0 {AR4_SPEED} {AR4_ACCEL} {AR4_DECEL} {AR4_RAMP}\n"
-                ser.write(command.encode('ascii'))
+            print(f"Searching -> Vel J1: {j1_search_vel:.2f}, J2: {j2_search_vel:.2f}")
+            
+            if arm:
+                arm.set_velocity_math(j1_search_vel, j2_search_vel)
             
             cv2.putText(frame, "SEARCHING...", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-            cmd_text = f"J1: {j1_current_pos:.2f} | J2: {j2_current_pos:.2f}"
+            cmd_text = f"J1_Vel: {j1_search_vel:.2f} | J2_Vel: {j2_search_vel:.2f}"
             cv2.putText(frame, cmd_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+        else:
+             # If tracking, stop the search timer/reset?
+             # Or just let it run in background.
+             pass
 
+        # Draw UI
         cv2.line(frame, (frame_center_x - 10, frame_center_y), (frame_center_x + 10, frame_center_y), (0, 255, 255), 1)
         cv2.line(frame, (frame_center_x, frame_center_y - 10), (frame_center_x, frame_center_y + 10), (0, 255, 255), 1)
         cv2.rectangle(frame, 
@@ -234,7 +246,7 @@ def generate_frames():
                       (frame_center_x + TRACKING_DEADZONE, frame_center_y + TRACKING_DEADZONE),
                       (100, 100, 100), 1)
 
-        for (x, y, x2, y2, text, person_name, error_x, error_y, j1_step, j2_step) in last_known_results:
+        for (x, y, x2, y2, text, person_name, error_x, error_y, j1_vel, j2_vel) in last_known_results:
             color = (0, 255, 0)
             if "Unknown" in text: color = (0, 0, 255)
             
@@ -246,7 +258,7 @@ def generate_frames():
                 face_center_y = y + (y2-y)//2
                 cv2.line(frame, (face_center_x, face_center_y), (frame_center_x, frame_center_y), (0, 255, 255), 1)
 
-                cmd_text = f"J1(Base): {j1_current_pos:.2f} | J2(Shldr): {j2_current_pos:.2f}"
+                cmd_text = f"J1_Vel: {j1_vel:.2f} | J2_Vel: {j2_vel:.2f}"
                 cv2.putText(frame, cmd_text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
         
         ret, buffer = cv2.imencode('.jpg', frame)
@@ -258,6 +270,8 @@ def generate_frames():
         frame_count += 1
 
     cap.release()
+    if arm:
+        arm.close()
 
 @app.route('/')
 def index():
@@ -268,7 +282,7 @@ def index():
             <style>body { background-color: #333; color: white; text-align: center; font-family: sans-serif; }</style>
         </head>
         <body>
-            <h1>Tracking Feed</h1>
+            <h1>Tracking Feed (Velocity Control)</h1>
             <p></p>
             <img src="/video_feed" style="width: 80%; border: 2px solid #555;">
         </body>
