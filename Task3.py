@@ -179,10 +179,13 @@ def generate_frames():
                             face_center_y = y + h // 2
                             error_x = face_center_x - frame_center_x
                             error_y = face_center_y - frame_center_y
+                            
+                            
+                            
 
                             j1_step = calculate_joint_movement(error_x, frame_width, TRACKING_DEADZONE, MAX_DEGREE_STEP_J1)
                             j2_step = calculate_joint_movement(error_y, frame_height, TRACKING_DEADZONE, MAX_DEGREE_STEP_J2)
-                            
+                            print(j1_step,j2_step)
                             j1_current_pos += j1_step
                             j2_current_pos += j2_step
 
