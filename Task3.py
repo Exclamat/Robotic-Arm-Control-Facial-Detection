@@ -9,17 +9,154 @@ from mtcnn.mtcnn import MTCNN
 from flask import Flask, Response
 import math
 import time
+import serial
+import serial.tools.list_ports
+import re
+from typing import List, Dict, Optional, NamedTuple
 
-# --- Import custom robot libraries ---
-try:
-    from arm2d import Arm2D
-except ImportError:
-    print("Error: arm2d.py not found. Please ensure it is in the same directory.")
-    exit()
+class TeensyLink:
+    def __init__(self, port: str = None, baud: int = 115200, timeout: float = 1.0):
+        self.port = port
+        self.baud = baud
+        self.timeout = timeout
+        self.ser: Optional[serial.Serial] = None
+        self._open()
+
+    def _detect_port(self) -> Optional[str]:
+        ports = list(serial.tools.list_ports.comports())
+        for p in ports:
+            if "ACM" in p.device or "USB" in p.device:
+                return p.device
+            if "usbmodem" in p.device:
+                return p.device
+            if "COM" in p.device:
+                return p.device
+        return None
+
+    def _open(self):
+        if self.ser and self.ser.is_open:
+            self.ser.close()
+        
+        if not self.port:
+            found = self._detect_port()
+            if not found:
+                self.port = '/dev/ttyACM0' 
+            else:
+                self.port = found
+        
+        print(f"[TeensyLink] Opening {self.port} @ {self.baud}...")
+        try:
+            self.ser = serial.Serial(self.port, self.baud, timeout=self.timeout)
+            time.sleep(2.0)
+            self.ser.reset_input_buffer()
+        except serial.SerialException as e:
+            print(f"[TeensyLink] Connection failed: {e}")
+            self.ser = None
+
+    def close(self):
+        if self.ser:
+            self.ser.close()
+            self.ser = None
+
+    def send_command(self, cmd: str, quiet_gap: float = 0.1, overall_timeout: float = 2.0) -> List[str]:
+        if not self.ser:
+            self._open()
+            if not self.ser:
+                return []
+
+        payload = (cmd.strip() + "\n").encode("utf-8")
+        try:
+            self.ser.write(payload)
+            self.ser.flush()
+        except serial.SerialException:
+            self._open()
+            if self.ser:
+                self.ser.write(payload)
+                self.ser.flush()
+            else:
+                return []
+
+        lines = []
+        t_start = time.time()
+        t_last = time.time()
+
+        while True:
+            if (time.time() - t_start) > overall_timeout:
+                break
+            
+            if self.ser.in_waiting > 0:
+                try:
+                    chunk = self.ser.readline()
+                    if chunk:
+                        s = chunk.decode("utf-8", errors="replace").strip()
+                        if s:
+                            lines.append(s)
+                        t_last = time.time()
+                except Exception:
+                    pass
+            else:
+                if lines and (time.time() - t_last > quiet_gap):
+                    break
+                time.sleep(0.01)
+        
+        return lines
+
+    def send_line_noreply(self, line: str) -> None:
+        if not self.ser:
+            self._open()
+            if not self.ser:
+                return
+
+        payload = (line.strip() + "\n").encode("utf-8")
+        try:
+            self.ser.write(payload)
+            self.ser.flush()
+        except serial.SerialException:
+            self._open()
+            if self.ser:
+                self.ser.write(payload)
+                self.ser.flush()
+
+class MoveResult(NamedTuple):
+    ok: bool
+    reply: List[str]
+
+_J1 = re.compile(r"\[J1\].*raw_deg=([-\d\.]+).*math_deg=([-\d\.]+)", re.IGNORECASE)
+_J2 = re.compile(r"\[J2\].*raw_deg=([-\d\.]+).*math_deg=([-\d\.]+)", re.IGNORECASE)
+_EE = re.compile(r"\[EE\].*x=([-\d\.]+).*y=([-\d\.]+)", re.IGNORECASE)
+
+class Arm2D:
+    def __init__(self):
+        self.link = TeensyLink()
+
+    def close(self):
+        self.link.close()
+
+    def initialize(self) -> MoveResult:
+        lines = self.link.send_command("h", overall_timeout=15.0)
+        success = any("homing complete" in line.lower() for line in lines)
+        return MoveResult(ok=success, reply=lines)
+
+    def set_velocity_math(self, j1_deg_per_s: float, j2_deg_per_s: float) -> None:
+        cmd = f"V {j1_deg_per_s:.3f} {j2_deg_per_s:.3f}"
+        self.link.send_line_noreply(cmd)
+
+    def status(self):
+        lines = self.link.send_command("s")
+        data = {}
+        for line in lines:
+            m1 = _J1.search(line)
+            if m1:
+                data['j1_raw'] = float(m1.group(1))
+                data['j1_math'] = float(m1.group(2))
+            m2 = _J2.search(line)
+            if m2:
+                data['j2_raw'] = float(m2.group(1))
+                data['j2_math'] = float(m2.group(2))
+        return data
 
 app = Flask(__name__)
 
-# --- Global Configurations ---
 os.environ["QT_QPA_PLATFORM"] = "offscreen"
 
 TRAINED_MODEL_PATH = "face_recognizer_model.pt"
@@ -27,19 +164,15 @@ DATA_DIR = "cropped_faces"
 FRAME_SKIP = 4
 CONFIDENCE_THRESHOLD = 0.7
 
-# --- Tracking Parameters ---
 TRACKING_DEADZONE = 40 
-# Max velocity in deg/s for smooth tracking
 MAX_VELOCITY_J1 = 20.0 
 MAX_VELOCITY_J2 = 10.0
 
-# --- Search Parameters ---
 SEARCH_AMPLITUDE_J1 = 15.0
 SEARCH_SPEED_J1 = 0.5
 SEARCH_AMPLITUDE_J2 = 5.0
 SEARCH_SPEED_J2 = 0.2
 
-# --- Helpers ---
 def fixed_image_standardization(image_tensor):
     processed_tensor = (image_tensor - 127.5) / 128.0
     return processed_tensor
@@ -49,30 +182,21 @@ class ConvertPilToRawTensor:
         return torch.tensor(np.array(pil_img), dtype=torch.float32).permute(2, 0, 1)
 
 def calculate_velocity_command(error_pixels, frame_dimension, deadzone, max_velocity):
-    """
-    Calculates velocity command (deg/s) based on pixel error.
-    Uses a deadzone and non-linear scaling.
-    """
     if abs(error_pixels) < deadzone:
         return 0.0
 
     half_screen = frame_dimension / 2
-    # Adjust error so it starts at 0 right after the deadzone
     adjusted_error = error_pixels - (np.sign(error_pixels) * deadzone)
     norm_error = adjusted_error / (half_screen - deadzone)
     
     norm_error = max(-1.0, min(1.0, norm_error))
 
-    # Quadratic scaling for finer control near center
     scaled_value = np.sign(norm_error) * (norm_error ** 2)
 
-    # Convert to velocity (deg/s)
-    # Note: If error is positive (target to right), we usually need positive velocity
     velocity = scaled_value * max_velocity
     
     return velocity
 
-# --- Model Loading ---
 try:
     from inception_resnet_v1 import InceptionResnetV1
 except ImportError:
@@ -111,17 +235,14 @@ data_transform = transforms.Compose([
 
 mtcnn = MTCNN()
 
-# --- Robot Initialization ---
 print("Initializing Robot Connection...")
 try:
     arm = Arm2D()
-    # Optional: arm.initialize() # Uncomment to force homing on startup
     print("Robot connected successfully via Arm2D.")
 except Exception as e:
     print(f"Failed to connect to robot: {e}")
     arm = None
 
-# --- Video Generator ---
 def generate_frames():
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
@@ -131,9 +252,6 @@ def generate_frames():
     frame_count = 0
     last_known_results = [] 
     search_time = 0.0
-    
-    # We use velocity control, so we don't track absolute position manually
-    # But for search mode, we might need absolute moves if we switch modes
     
     while True:
         ret, frame = cap.read()
@@ -196,14 +314,12 @@ def generate_frames():
                             error_x = face_center_x - frame_center_x
                             error_y = face_center_y - frame_center_y
 
-                            # Calculate required velocity
                             j1_vel = calculate_velocity_command(error_x, frame_width, TRACKING_DEADZONE, MAX_VELOCITY_J1)
                             j2_vel = calculate_velocity_command(error_y, frame_height, TRACKING_DEADZONE, MAX_VELOCITY_J2)
 
                             print(f"Tracking -> Vel J1: {j1_vel:.2f}, J2: {j2_vel:.2f}")
 
                             if arm:
-                                # Use the non-blocking velocity command from arm2d.py
                                 arm.set_velocity_math(j1_vel, j2_vel)
 
                             current_results.append((x, y, x2, y2, text, person_name, error_x, error_y, j1_vel, j2_vel))
@@ -214,14 +330,9 @@ def generate_frames():
             else:
                 last_known_results = []
         
-        # Search Pattern Logic (when no target found)
         if not last_known_results:
             search_time += 0.1 
             
-            # For search, we calculate a continuously changing velocity
-            # Velocity is derivative of position: d/dt(A*sin(wt)) = A*w*cos(wt)
-            
-            # Or, we can just oscillate the velocity command itself
             j1_search_vel = SEARCH_AMPLITUDE_J1 * math.sin(search_time * SEARCH_SPEED_J1)
             j2_search_vel = SEARCH_AMPLITUDE_J2 * math.cos(search_time * SEARCH_SPEED_J2)
             
@@ -234,11 +345,8 @@ def generate_frames():
             cmd_text = f"J1_Vel: {j1_search_vel:.2f} | J2_Vel: {j2_search_vel:.2f}"
             cv2.putText(frame, cmd_text, (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         else:
-             # If tracking, stop the search timer/reset?
-             # Or just let it run in background.
              pass
 
-        # Draw UI
         cv2.line(frame, (frame_center_x - 10, frame_center_y), (frame_center_x + 10, frame_center_y), (0, 255, 255), 1)
         cv2.line(frame, (frame_center_x, frame_center_y - 10), (frame_center_x, frame_center_y + 10), (0, 255, 255), 1)
         cv2.rectangle(frame, 
