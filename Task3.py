@@ -10,7 +10,7 @@ from flask import Flask, Response
 import math
 import time
 import serial
-form arm2d import Arm2D
+from arm2d import Arm2D
 
 
 
